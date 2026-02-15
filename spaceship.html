@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Flappy Spaceship</title>
+
+<style>
+html,body{
+margin:0;
+padding:0;
+overflow:hidden;
+background:black;
+font-family:Arial, sans-serif;
+touch-action:manipulation;
+}
+
+canvas{ display:block; }
+
+#overlay{
+position:absolute;
+top:0;
+left:0;
+width:100%;
+height:100%;
+display:flex;
+justify-content:center;
+align-items:center;
+flex-direction:column;
+background:rgba(0,0,0,0.85);
+color:white;
+text-align:center;
+display:none;
+padding:20px;
+box-sizing:border-box;
+}
+
+button{
+padding:14px 28px;
+font-size:18px;
+border:none;
+border-radius:10px;
+background:#00ffd5;
+margin-top:20px;
+font-weight:bold;
+cursor:pointer;
+}
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="overlay">
+<h1 id="titleText"></h1>
+<p id="infoText"></p>
+<button onclick="resetToStart()">Restart</button>
+</div>
+
+<script>
+const canvas=document.getElementById("gameCanvas");
+const ctx=canvas.getContext("2d");
+
+let DPR=window.devicePixelRatio||1;
+
+function resizeCanvas(){
+DPR=window.devicePixelRatio||1;
+
+canvas.style.width=window.innerWidth+"px";
+canvas.style.height=window.innerHeight+"px";
+
+canvas.width=window.innerWidth*DPR;
+canvas.height=window.innerHeight*DPR;
+
+ctx.setTransform(DPR,0,0,DPR,0,0);
+
+initResponsiveValues();
+initStars();
+}
+
+window.addEventListener("resize",resizeCanvas);
+window.addEventListener("orientationchange",resizeCanvas);
+
+/* ===========================
+   RESPONSIVE VALUES
+=========================== */
+
+let gravity,lift,maxFall,damping;
+let pipeGap,baseSpeed,pipeSpeed;
+let ship;
+
+function initResponsiveValues(){
+let w=window.innerWidth;
+let h=window.innerHeight;
+let isMobile=w<768;
+
+gravity=isMobile?0.28:0.25;
+lift=isMobile?-7:-6;
+maxFall=6;
+damping=0.995;
+
+pipeGap=isMobile?h*0.30:h*0.28;
+baseSpeed=isMobile?2.2:2;
+pipeSpeed=baseSpeed;
+
+ship={
+x:w*0.25,
+y:h/2,
+width:isMobile?70:110,
+height:isMobile?55:80,
+velocity:0
+};
+}
+
+/* ===========================
+   GAME STATE
+=========================== */
+
+let gameState="start";
+let score=0;
+let highScore=localStorage.getItem("flappyHighScore")||0;
+
+const shipImg=new Image();
+shipImg.src="spaceship.png";
+
+let pipes=[];
+let stars=[];
+let explosion=null;
+
+/* ===========================
+   AUDIO SYSTEM
+=========================== */
+
+let audioCtx=null;
+function initAudio(){
+if(!audioCtx){
+audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+}
+}
+
+function playTone(freq,duration,type="sine",volume=0.2){
+if(!audioCtx)return;
+let osc=audioCtx.createOscillator();
+let gain=audioCtx.createGain();
+osc.type=type;
+osc.frequency.value=freq;
+gain.gain.value=volume;
+osc.connect(gain);
+gain.connect(audioCtx.destination);
+osc.start();
+osc.stop(audioCtx.currentTime+duration);
+}
+
+function playJump(){playTone(500,0.1,"square",0.2);}
+function playCoin(){
+playTone(900,0.08,"triangle",0.25);
+setTimeout(()=>playTone(1200,0.08,"triangle",0.2),80);
+}
+function playExplosion(){playTone(120,0.4,"sawtooth",0.3);}
+function playGameOver(){
+playTone(300,0.2,"square",0.3);
+setTimeout(()=>playTone(150,0.3,"square",0.3),200);
+}
+
+/* ===========================
+   STARFIELD
+=========================== */
+
+function initStars(){
+stars=[];
+for(let i=0;i<100;i++){
+stars.push({
+x:Math.random()*window.innerWidth,
+y:Math.random()*window.innerHeight,
+size:Math.random()*2,
+speed:Math.random()*0.4+0.2
+});
+}
+}
+
+function drawStars(){
+ctx.fillStyle="white";
+stars.forEach(s=>{
+s.x-=s.speed;
+if(s.x<0){
+s.x=window.innerWidth;
+s.y=Math.random()*window.innerHeight;
+}
+ctx.fillRect(s.x,s.y,s.size,s.size);
+});
+}
+
+/* ===========================
+   PIPE
+=========================== */
+
+function createPipe(){
+let h=window.innerHeight;
+let topHeight=Math.random()*(h-pipeGap-150)+75;
+
+pipes.push({
+x:window.innerWidth,
+width:window.innerWidth<768?60:90,
+top:topHeight,
+bottom:topHeight+pipeGap,
+passed:false
+});
+}
+
+function drawPipe(x,y,width,height){
+let g=ctx.createLinearGradient(x,0,x+width,0);
+g.addColorStop(0,"#1c1f26");
+g.addColorStop(0.5,"#3a3f4b");
+g.addColorStop(1,"#1c1f26");
+ctx.fillStyle=g;
+ctx.fillRect(x,y,width,height);
+}
+
+/* ===== SKY BLUE SURFACE GLOW (Restored) ===== */
+
+function drawGlow(x,y,width,isTop){
+ctx.fillStyle="#00cfff";
+if(isTop){
+ctx.fillRect(x,y-8,width,8);
+}else{
+ctx.fillRect(x,y,width,8);
+}
+}
+
+/* ===========================
+   EXPLOSION
+=========================== */
+
+function createExplosion(x,y){
+explosion={x,y,radius:5,maxRadius:60,alpha:1};
+playExplosion();
+}
+
+function drawExplosion(){
+if(!explosion)return;
+
+ctx.beginPath();
+ctx.arc(explosion.x,explosion.y,explosion.radius,0,Math.PI*2);
+ctx.fillStyle="rgba(255,120,0,"+explosion.alpha+")";
+ctx.fill();
+
+explosion.radius+=4;
+explosion.alpha-=0.05;
+
+if(explosion.radius>explosion.maxRadius){
+explosion=null;
+playGameOver();
+showGameOver();
+}
+}
+
+/* ===========================
+   COLLISION
+=========================== */
+
+function checkCollision(pipe){
+let marginX=10;
+let marginY=8;
+
+let left=ship.x+marginX;
+let right=ship.x+ship.width-marginX;
+let top=ship.y+marginY;
+let bottom=ship.y+ship.height-marginY;
+
+if(right>pipe.x && left<pipe.x+pipe.width){
+if(top<pipe.top || bottom>pipe.bottom){
+return true;
+}
+}
+return false;
+}
+
+/* ===========================
+   UPDATE
+=========================== */
+
+function update(){
+if(gameState!=="playing")return;
+
+ship.velocity+=gravity;
+ship.velocity*=damping;
+if(ship.velocity>maxFall)ship.velocity=maxFall;
+ship.y+=ship.velocity;
+
+if(ship.y<0||ship.y+ship.height>window.innerHeight){
+triggerCrash();
+}
+
+pipes.forEach(pipe=>{
+pipe.x-=pipeSpeed;
+
+if(!pipe.passed&&pipe.x+pipe.width<ship.x){
+pipe.passed=true;
+score++;
+playCoin();
+if(score%10===0)pipeSpeed*=1.05;
+}
+
+if(checkCollision(pipe)){
+triggerCrash();
+}
+});
+
+pipes=pipes.filter(p=>p.x+p.width>0);
+if(pipes.length===0||pipes[pipes.length-1].x<window.innerWidth-300){
+createPipe();
+}
+}
+
+/* ===========================
+   DRAW
+=========================== */
+
+function draw(){
+ctx.fillStyle="black";
+ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+
+drawStars();
+
+pipes.forEach(pipe=>{
+drawPipe(pipe.x,0,pipe.width,pipe.top);
+drawGlow(pipe.x,pipe.top,pipe.width,true);
+
+drawPipe(pipe.x,pipe.bottom,pipe.width,window.innerHeight-pipe.bottom);
+drawGlow(pipe.x,pipe.bottom,pipe.width,false);
+});
+
+if(gameState!=="crash"){
+ctx.drawImage(shipImg,ship.x,ship.y,ship.width,ship.height);
+}
+
+if(explosion)drawExplosion();
+
+if(gameState==="playing"){
+ctx.fillStyle="gold";
+ctx.beginPath();
+ctx.arc(30,35,12,0,Math.PI*2);
+ctx.fill();
+
+ctx.fillStyle="white";
+ctx.font="24px Arial";
+ctx.fillText("x "+score,50,43);
+}
+}
+
+/* ===========================
+   GAME FLOW
+=========================== */
+
+function triggerCrash(){
+if(gameState!=="playing")return;
+gameState="crash";
+createExplosion(ship.x+ship.width/2,ship.y+ship.height/2);
+}
+
+function resetGame(){
+score=0;
+pipeSpeed=baseSpeed;
+ship.y=window.innerHeight/2;
+ship.velocity=0;
+pipes=[];
+explosion=null;
+createPipe();
+}
+
+function startGame(){
+initAudio();
+gameState="playing";
+document.getElementById("overlay").style.display="none";
+resetGame();
+}
+
+function showGameOver(){
+gameState="gameover";
+if(score>highScore){
+highScore=score;
+localStorage.setItem("flappyHighScore",highScore);
+}
+document.getElementById("overlay").style.display="flex";
+document.getElementById("titleText").innerText="Game Over";
+document.getElementById("infoText").innerText=
+"Score: "+score+" | High Score: "+highScore;
+}
+
+function resetToStart(){
+gameState="start";
+document.getElementById("overlay").style.display="none";
+startGame();
+}
+
+function handleInput(){
+if(gameState==="start") startGame();
+else if(gameState==="playing"){
+ship.velocity=lift;
+playJump();
+}
+}
+
+window.addEventListener("mousedown",handleInput);
+window.addEventListener("touchstart",handleInput);
+
+function loop(){
+update();
+draw();
+requestAnimationFrame(loop);
+}
+
+shipImg.onload=function(){
+resizeCanvas();
+loop();
+};
+</script>
+
+</body>
+</html>
